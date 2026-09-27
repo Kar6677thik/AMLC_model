@@ -1,10 +1,11 @@
 # Third-party components
 
-This baseline uses no external task dataset or pretrained neural checkpoint.
+This pipeline uses no external task dataset or pretrained neural checkpoint.
 
 | Component | Purpose | License reference |
 | --- | --- | --- |
 | LightGBM | Gradient-boosted pair classifier | [MIT](https://github.com/lightgbm-org/LightGBM/blob/main/LICENSE) |
+| XGBoost (optional) | CUDA tree training and scoring | [Apache-2.0](https://github.com/dmlc/xgboost/blob/master/LICENSE) |
 | RapidFuzz | Local string similarity | [MIT](https://github.com/rapidfuzz/RapidFuzz/blob/main/LICENSE) |
 | NumPy | Numeric arrays and disk-backed training matrices | [BSD-3-Clause](https://github.com/numpy/numpy/blob/main/LICENSE.txt) |
 | Python standard library / SQLite | TSV I/O, manifests, indexes, packaging | Installed distributions' notices |

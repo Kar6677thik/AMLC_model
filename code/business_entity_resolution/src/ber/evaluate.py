@@ -71,6 +71,7 @@ def evaluate(work, run, partition="dev", limit=None):
     report = {"partition": partition, "requested_limit": limit, "threshold": threshold,
         "metrics": overall.report(), "slices": {k: v.report() for k, v in slices.items()},
         "seconds": time.perf_counter()-started, "blocking": scorer.blocking_stats,
+        "performance": scorer.performance,
         "threshold_search": [{"threshold": t, "macro_f05": s/n, "predicted_pairs": p}
             for t, s, p in zip(thresholds, totals, prediction_counts)],
         "scores_sha256": sha256(cache)}

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 from .common import load_config, log, read_json
@@ -10,6 +11,7 @@ from .database import prepare
 def parser():
     root = argparse.ArgumentParser(description="RestoreBuildRun business entity resolution baseline")
     subs = root.add_subparsers(dest="command", required=True)
+    subs.add_parser("check-gpu", help="Verify actual CUDA training and inference on a tiny synthetic dataset")
     def add(name, dataset=False, run=False, output=False, config=False):
         p = subs.add_parser(name)
         p.add_argument("--work", required=True, type=Path, help="Persistent local index/artifact directory")
@@ -32,6 +34,8 @@ def parser():
     add("predict", dataset=True, run=True, output=True)
     p = add("benchmark", dataset=True, run=True)
     p.add_argument("--limit", type=int, default=1000)
+    p = add("retrieval-audit", config=True, output=True)
+    p.add_argument("--limit", type=int, default=1000)
     add("validate", output=True)
     p = add("package", run=True, output=True)
     p.add_argument("--destination", required=True, type=Path)
@@ -47,7 +51,13 @@ def main(argv=None):
     try:
         if getattr(args, "limit", None) is not None and args.limit < 0:
             raise ValueError("--limit must be nonnegative")
-        if args.command == "prepare":
+        if args.command == "check-gpu":
+            from .trees import gpu_check
+            print(json.dumps(gpu_check(), indent=2))
+        elif args.command == "retrieval-audit":
+            from .retrieval_audit import retrieval_audit
+            retrieval_audit(args.work, load_config(args.config), args.output, args.limit)
+        elif args.command == "prepare":
             cfg = load_config(args.config)
             for split in (["train", "test"] if args.split == "both" else [args.split]):
                 prepare(args.dataset, args.work, split, cfg)

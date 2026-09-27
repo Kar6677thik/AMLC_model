@@ -9,6 +9,9 @@ description = "Reproducible business entity resolution baseline"
 requires-python = ">=3.10"
 dependencies = ["numpy>=1.26,<3", "rapidfuzz>=3.9,<4", "lightgbm>=4.6,<5"]
 
+[project.optional-dependencies]
+gpu = ["xgboost>=3.1,<4"]
+
 [project.scripts]
 ber = "ber.cli:main"
 

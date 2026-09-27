@@ -15,6 +15,10 @@ DEFAULTS = {
     "train_anchors": 25000, "dev_anchors": 10000,
     "prediction_batch_anchors": 128, "prediction_shard_anchors": 10000, "trees": 250, "learning_rate": 0.05,
     "num_leaves": 31, "min_child_samples": 50, "threads": 8,
+    "retrieval_version": "v1", "model_backend": "lightgbm", "device": "cpu",
+    "feature_workers": 1, "feature_batch_anchors": 128,
+    "query_expansion": 1, "intersection_budget": 3,
+    "max_depth": 6, "max_bin": 128,
 }
 SCHEMA_VERSION = 1
 
@@ -28,11 +32,18 @@ def load_config(path=None):
             raise ValueError(f"Unknown configuration keys: {sorted(unknown)}")
         cfg.update(supplied)
     for key, default in DEFAULTS.items():
-        if isinstance(default, int):
+        if isinstance(default, str):
+            allowed = {"retrieval_version": {"v1", "v2"}, "model_backend": {"lightgbm", "xgboost"},
+                       "device": {"cpu", "cuda:0"}}
+            if cfg[key] not in allowed[key]:
+                raise ValueError(f"{key} must be one of {sorted(allowed[key])}")
+        elif isinstance(default, int):
             if type(cfg[key]) is not int or cfg[key] < (0 if key == "seed" else 1):
                 raise ValueError(f"{key} must be a positive integer (seed may be zero)")
         elif not isinstance(cfg[key], (int, float)) or not 0 < cfg[key] <= 1:
             raise ValueError(f"{key} must lie in (0, 1]")
+    if cfg["device"].startswith("cuda") and cfg["model_backend"] != "xgboost":
+        raise ValueError("CUDA requires model_backend=xgboost; LightGBM remains the CPU fallback")
     return cfg
 
 
@@ -67,7 +78,7 @@ def log(message):
 def environment():
     from importlib.metadata import version
     result = {"python": sys.version, "platform": platform.platform()}
-    for name in ("numpy", "rapidfuzz", "lightgbm"):
+    for name in ("numpy", "rapidfuzz", "lightgbm", "xgboost"):
         try:
             result[name] = version(name)
         except Exception:

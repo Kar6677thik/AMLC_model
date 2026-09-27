@@ -1,10 +1,30 @@
-# RestoreBuildRun entity resolution baseline
+# RestoreBuildRun entity resolution
 
-Implemented: streaming input audit, SQLite-backed lexical retrieval, grouped fit/dev/holdout partitions, 32 pair features, a LightGBM binary matcher (or rules baseline), macro F0.5 threshold tuning, resumable inference, strict output validation, and final zip generation.
+Implemented: streaming input audit, SQLite-backed lexical retrieval, grouped fit/dev/holdout partitions, 46 pair features, LightGBM CPU and XGBoost CUDA matchers (or rules), macro F0.5 threshold tuning, resumable inference, strict output validation, and final zip generation. Optimized configurations add broader retrieval and Windows-spawn feature workers.
 
-**Execution status:** authored and reviewed on the development PC; tests and challenge-data runs must execute on the separate compute PC. No accuracy, runtime, or passing-test claim is made yet. The first launcher action after installation is the synthetic test suite; it stops on failure.
+**Execution status:** baseline-001 produced development macro F0.5 0.84050; the user reports submission score 0.806 and roughly five hours. The optimization changes are statically reviewed but unexecuted on the development PC. Tests, CUDA checks and challenge-data runs must execute on the separate compute PC. No improved score, speedup or passing-test claim is made yet.
 
-## Quick start on the Windows compute PC
+## Next run: 8 GB NVIDIA GPU
+
+From the repository root on the compute PC:
+
+```powershell
+.\scripts\Run-Optimized.ps1 -Dataset 'D:\AMLC\student_resource\dataset' -RunId optimized-002 -Phase Evaluate -AuditRetrieval
+```
+
+This runs synthetic tests, verifies actual CUDA training/prediction, audits retrieval, trains on 100,000 fit anchors, tunes the threshold and benchmarks 5,000 test queries. Defaults are four feature workers, 1,024 anchors per scoring batch and 32 candidates per target source. XGBoost CUDA support comes from the `[gpu]` package extra; the check rejects detected CPU fallback. See the [optimization analysis](../../docs/09_baseline_analysis_and_optimization.md) for measurements, configuration choices and limitations.
+
+Review the new development and benchmark reports, then run:
+
+```powershell
+.\scripts\Run-Optimized.ps1 -Dataset 'D:\AMLC\student_resource\dataset' -RunId optimized-002 -Phase Predict -SkipInstall
+```
+
+Full inference requires development F0.5 above 0.8404988086 and a conservative scoring ETA within `-MaxScoringHours` (default 3). Allow additional time for exports, validators and upload. Use `-Backend cpu -RunId optimized-cpu-002 -Phase Evaluate` for a separate LightGBM comparison. There is no silent GPU fallback.
+
+Compatible completed indexes in `artifacts/baseline` are reused; pass `-Work` if they live elsewhere. Preserve baseline outputs and use a new run ID. The new feature/source signature cannot resume a model trained with the original code. The commands below describe the general pipeline; substitute the optimized config and new run/output paths as appropriate.
+
+## General CPU launcher on the Windows compute PC
 
 Install Python **3.10 or newer** (3.11 is a reasonable starting point) and Git. Copy the supplied dataset separately; Git excludes it. The baseline needs no GPU, CUDA, external service, or pretrained model download.
 
@@ -23,14 +43,14 @@ Expected data layout:
 From the repository root in PowerShell, replace the dataset path with the actual location:
 
 ```powershell
-.\scripts\Run-Compute.ps1 -Dataset 'D:\AMLC\student_resource\dataset' -RunId baseline-001
+.\scripts\Run-Compute.ps1 -Dataset 'D:\AMLC\student_resource\dataset' -RunId baseline-new
 ```
 
 The launcher creates `.venv`, installs the editable package, runs synthetic tests, prepares training data, fits the model, tunes the threshold, prepares the test index, benchmarks 1,000 spaced test queries, predicts all test S1 entities, and strictly validates both outputs. Read the printed throughput estimate: it excludes output writing, validation, packaging, and upload. Keep the deadline buffer in the plan.
 
 Rerun the same command to reuse completed training/evaluation and resume completed inference shards. It will not silently overwrite incomplete training or reuse a different model version. `-SkipInstall` reuses the existing environment. Use `-Python 'C:\path\to\python.exe'` if `python` is not on PATH.
 
-Outputs are under `output/baseline-001/`; reports are under `runs/baseline-001/`; SQLite indexes are under `artifacts/baseline/`. Read `dev_report.json`, `benchmark_test.json`, and `validation.json` before selecting a release. The launcher does not upload anything.
+Outputs and reports are under `output/<RunId>/` and `runs/<RunId>/`; SQLite indexes are under `artifacts/baseline/`. Read `dev_report.json`, `benchmark_test.json`, and `validation.json` before selecting a release. The launcher does not upload anything.
 
 ## Manual setup and tests
 
@@ -76,7 +96,7 @@ python -m ber run --dataset $Data --work $Work --run $Run --output $Out --config
 
 Do not run concurrent writers against the same work, run, or output directory. These stages are intended to execute sequentially on the compute PC.
 
-The rules control uses `--mode rules` and a new run/output directory. It is calibrated on development data too. The GPU upgrade is not implemented in this baseline.
+The rules control uses `--mode rules` and a new run/output directory. It is calibrated on development data too. GPU execution uses `configs/optimized-gpu.json` and requires the optional XGBoost dependency. Neural retrieval and neural pair scoring remain deferred.
 
 ## Validation policy
 
@@ -100,7 +120,7 @@ The source-specific inverted index uses hashed lexical keys for exact/composite 
 
 Each query reads bounded posting lists, with a small bounded intersection fallback for frequent keys. Lists that cannot be safely bounded are skipped and counted in diagnostics. After lexical ranking, the default cap is 20 targets from each source. The matcher scores every retained candidate; exported candidates are not narrowed to final matches.
 
-Indexes and training arrays are disk-backed. The default training sample is 25,000 fit anchors, at most 1 million pairs and about 128 MB of float32 feature storage, plus labels/weights and LightGBM's working memory. Actual index size and runtime depend on measured row counts and key frequencies. This is not a promise of performance on the full dataset or a billion-record benchmark.
+Indexes and training arrays are disk-backed. The default CPU baseline sample is 25,000 fit anchors, at most 1 million pairs and about 184 MB of float32 feature storage, plus labels/weights and library working memory. The optimized sample is 100,000 anchors with at most 6.4 million pairs (about 1.18 GB of feature storage). Actual index size and runtime depend on measured row counts and key frequencies. This is not a promise of performance on the full dataset or a billion-record benchmark.
 
 For experiments, copy the config, change one parameter, and use a new run/output directory. Index-affecting changes (`name_tokens`, `address_tokens`, `name_grams`, `seed`, normalization/builder code) require a new work directory. Candidate caps or model settings can reuse a compatible index, but still require fresh model/evaluation runs. Never change inference caps after calibration.
 

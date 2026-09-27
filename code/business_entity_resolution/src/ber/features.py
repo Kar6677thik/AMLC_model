@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from rapidfuzz.fuzz import ratio, token_set_ratio, token_sort_ratio
 
-from .normalize import core_name, folded
+from .text_views import view
 
 FEATURES = [
     "name_exact", "name_ratio", "name_token_sort", "name_token_set", "name_jaccard",
@@ -13,6 +13,10 @@ FEATURES = [
     "country_missing", "name_missing", "address_missing", "name_token_count",
     "target_name_token_count", "address_token_count", "target_address_token_count",
     "target_is_s3", "retrieval_score", "retrieval_key_hits", "candidate_count",
+    "name_variant_ratio", "name_initials_equal", "name_core_ratio", "name_digit_conflict",
+    "address_variant_ratio", "address_variant_token_set", "address_digit_overlap",
+    "address_digit_containment", "postal_equal", "postal_conflict", "postal_missing",
+    "first_number_equal", "first_number_conflict", "address_token_count_ratio",
 ]
 
 
@@ -30,12 +34,13 @@ def length_ratio(a, b):
 
 def pair_features(anchor, candidate, count):
     target = candidate.record
-    an, bn, aa, ba = map(folded, (anchor.name, target.name, anchor.address, target.address))
-    ant, bnt, aat, bat = (set(t.split()) for t in (an, bn, aa, ba))
-    anum, bnum = ({t for t in ts if any(c.isdigit() for c in t)} for ts in (aat, bat))
+    nv, nt, av, at = map(view, (anchor.name, target.name, anchor.address, target.address))
+    an, bn, aa, ba = (v.text for v in (nv, nt, av, at))
+    ant, bnt, aat, bat = (v.tokens for v in (nv, nt, av, at))
+    anum, bnum = av.numbers, at.numbers
     name_ok, address_ok = bool(an and bn), bool(aa and ba)
     country_ok = bool(anchor.country and target.country)
-    cn, ct = core_name(an), core_name(bn)
+    cn, ct = nv.core, nt.core
     values = [
         name_ok and an == bn,
         ratio(an, bn)/100 if name_ok else 0,
@@ -54,6 +59,18 @@ def pair_features(anchor, candidate, count):
         not country_ok, not name_ok, not address_ok,
         len(ant), len(bnt), len(aat), len(bat), target.source == 3,
         candidate.retrieval_score, candidate.key_hits, count,
+        ratio(nv.variant, nt.variant)/100 if name_ok else 0,
+        bool(nv.initials and nv.initials == nt.initials),
+        ratio(cn, ct)/100 if cn and ct else 0,
+        bool(nv.digits and nt.digits and not nv.digits & nt.digits),
+        ratio(av.variant, at.variant)/100 if address_ok else 0,
+        token_set_ratio(av.variant, at.variant)/100 if address_ok else 0,
+        overlap(av.digits, at.digits), contain(av.digits, at.digits),
+        bool(av.postal & at.postal), bool(av.postal and at.postal and not av.postal & at.postal),
+        not bool(av.postal and at.postal),
+        bool(av.first_number and av.first_number == at.first_number),
+        bool(av.first_number and at.first_number and av.first_number != at.first_number),
+        min(len(aat), len(bat))/max(len(aat), len(bat)) if aat and bat else 0,
     ]
     return [float(v) for v in values]
 

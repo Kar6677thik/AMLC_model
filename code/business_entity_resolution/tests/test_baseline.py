@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import csv
 import gzip
+import importlib.util
 import tempfile
 import unittest
+from unittest.mock import Mock
 import zipfile
+import numpy as np
 from pathlib import Path
 
 from ber.common import load_config, read_json, save_json, sha256
-from ber.database import connect, prepare
+from ber.database import anchors, connect, prepare
 from ber.evaluate import evaluate
 from ber.io import MATCH_HEADER, SOURCE_HEADER, id_list
 from ber.metrics import Metrics, f05
@@ -17,6 +20,10 @@ from ber.normalize import folded, normalize
 from ber.package import package
 from ber.predict import predict
 from ber.validate import validate
+from ber.features import FEATURES
+from ber.parallel import feature_batches
+from ber.text_views import view
+from ber.trees import assert_cuda
 
 
 def write_tsv(path, header, rows):
@@ -72,6 +79,22 @@ class MetricTests(unittest.TestCase):
         for bad in ("S2-1,S2-1", "S2-1,", " S2-1", '"S2-1"'):
             with self.assertRaises(ValueError):
                 id_list(bad)
+
+    def test_cached_views_preserve_digits_and_unicode(self):
+        self.assertEqual(view("भारत").text, "भारत")
+        self.assertEqual(view("école").text, "ecole")
+        self.assertEqual(view("17 road 560001").variant, "17 rd 560001")
+        self.assertEqual(view("17 road 560001").postal, frozenset({"560001"}))
+        self.assertEqual(view("17 road 560001").first_number, "17")
+        self.assertEqual(len(FEATURES), 46)
+
+    def test_cuda_request_rejects_cpu_fallback(self):
+        model = Mock()
+        model.save_config.return_value = '{"learner":{"generic_param":{"device":"cpu"}}}'
+        with self.assertRaisesRegex(ValueError, "CUDA requested"):
+            assert_cuda(model)
+        model.save_config.return_value = '{"learner":{"generic_param":{"device":"cuda:0"}}}'
+        self.assertEqual(assert_cuda(model), "cuda:0")
 
 
 class PipelineTests(unittest.TestCase):
@@ -166,6 +189,33 @@ class PipelineTests(unittest.TestCase):
         save_json(output / "prediction.json", manifest)
         with self.assertRaisesRegex(ValueError, "Unknown target ID"):
             validate(self.work, output)
+
+    def test_parallel_v2_features_preserve_order_and_values(self):
+        db = connect(self.work / "test.sqlite")
+        cfg = dict(self.cfg, retrieval_version="v2", query_expansion=3, feature_batch_anchors=2)
+        try:
+            selected = list(anchors(db))
+            serial = list(feature_batches(db, iter(selected), dict(cfg, feature_workers=1)))
+            parallel = list(feature_batches(db, iter(selected), dict(cfg, feature_workers=2)))
+            self.assertEqual(len(serial), len(parallel))
+            for a, b in zip(serial, parallel):
+                self.assertEqual(a[0], b[0])
+                np.testing.assert_array_equal(a[1], b[1])
+                self.assertEqual(a[2], b[2])
+                for _, candidates in a[0]:
+                    self.assertLessEqual(len(candidates), 2*cfg["candidates_per_source"])
+                    self.assertEqual(len(candidates), len({c.record.rid for c in candidates}))
+        finally:
+            db.close()
+
+    @unittest.skipUnless(importlib.util.find_spec("xgboost"), "Optional XGBoost is not installed")
+    def test_xgboost_cpu_roundtrip_and_package(self):
+        self.cfg.update(model_backend="xgboost", device="cpu", retrieval_version="v2")
+        run, output = self.run_pipeline("learned")
+        self.assertTrue((run / "model.ubj").exists())
+        archive = package(self.work, run, output, self.root / "xgb-dist", "Synthetic Test Member")
+        with zipfile.ZipFile(archive) as z:
+            self.assertIn("code/business_entity_resolution/assets/model.ubj", z.namelist())
 
 
 if __name__ == "__main__":

@@ -38,7 +38,8 @@ def benchmark(work, run, limit=1000):
         "total_test_anchors": total, "extrapolated_scoring_seconds": total/rate if rate else None,
         "conservative_scoring_seconds_2x": 2*total/rate if rate else None,
         "exclusions": "Does not include index build, full output writing, validation, packaging or upload.",
-        "blocking": scorer.blocking_stats}
+        "blocking": scorer.blocking_stats, "performance": scorer.performance,
+        "backend": scorer.cfg["model_backend"], "device": scorer.cfg["device"]}
     save_json(Path(run) / "benchmark_test.json", report)
     log(f"Benchmark: {rate:.2f} queries/sec; scoring-only estimate {total/rate/3600 if rate else 0:.2f} hours (before 2x margin)")
     return report

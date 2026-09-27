@@ -26,7 +26,10 @@ def package(work, run, output, destination, members, team="RestoreBuildRun"):
         raise ValueError("Output belongs to a different decision rule")
     validation = validate(work, output)
     environment_lock = (run / "environment.txt").read_text(encoding="utf-8").lower()
-    for dependency in ("numpy", "rapidfuzz", "lightgbm"):
+    dependencies = ["numpy", "rapidfuzz", "lightgbm"]
+    if meta["config"].get("model_backend") == "xgboost" and meta["mode"] == "learned":
+        dependencies.append("xgboost")
+    for dependency in dependencies:
         if not any(line.startswith(dependency + "==") for line in environment_lock.splitlines()):
             raise ValueError(f"Exact {dependency} pin missing from environment.txt; resolve before packaging")
     dev = read_json(run / "dev_report.json")
@@ -63,7 +66,7 @@ Source-specific global keys cover exact name/address, normalized name, informati
 - The budget constrains attainable recall; it does not guarantee complete recovery for high-multiplicity entities.
 
 ## 4. Matching Model
-Features comprise name/address string and token similarity, numeric agreement/conflict, missingness, country agreement/conflict, source, retrieval evidence, and candidate counts. Learned mode uses LightGBM with per-anchor normalized pair weights on sampled complete anchor groups. Rules mode uses a conservative fixed lexical scoring function. The selected mode is **{meta['mode']}**, with frozen decision threshold **{dev['threshold']}**.
+Features comprise name/address string and token similarity, generic abbreviation views, numeric/postal/first-number agreement and conflict, missingness, country evidence, source, retrieval evidence, and candidate counts. Learned mode uses **{meta['config'].get('model_backend', 'lightgbm')}**, device **{meta['config'].get('device', 'cpu')}**, with per-anchor normalized pair weights on sampled complete anchor groups. Rules mode uses a conservative fixed lexical scoring function. The selected mode is **{meta['mode']}**, with frozen decision threshold **{dev['threshold']}**. Retrieval version: **{meta['config'].get('retrieval_version', 'v1')}**. In v2, expanded query keys reuse the original index and channel-diverse ranking preserves address/name alternatives.
 
 The metric is per-S1 macro F0.5, including singleton credit. The threshold grid is selected on development only; an optional holdout assessment never retunes it. No neural checkpoint is deployed by this baseline. Code and trained baseline artifacts are provided under MIT; third-party notices are included.
 
@@ -100,7 +103,7 @@ All development threshold comparisons, candidate counts, and slices are in the b
             archive.write(path, prefix + path.relative_to(source_dir).as_posix())
         archive.writestr(prefix + "configs/final.json", json.dumps(meta["config"], indent=2) + "\n")
         archive.write(run / "environment.txt", prefix + "requirements.txt")
-        for name in ("run.json", "training.json", "decision.json", "model.txt", "dev_report.json", "holdout_report.json", "benchmark_test.json", "environment.txt", "training_anchors.tsv"):
+        for name in ("run.json", "training.json", "decision.json", "model.txt", "model.ubj", "dev_report.json", "holdout_report.json", "benchmark_test.json", "environment.txt", "training_anchors.tsv"):
             if (run / name).exists():
                 archive.write(run / name, prefix + "assets/" + name)
         for name in ("train_manifest.json", "test_manifest.json"):

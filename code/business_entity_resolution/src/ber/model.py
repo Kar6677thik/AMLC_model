@@ -4,23 +4,28 @@ import os
 import subprocess
 import sys
 import time
+from collections import Counter
 from pathlib import Path
 
 import numpy as np
 
-from .blocking import Blocker
-from .common import environment, log, read_json, save_json, sha256, source_hash
+from .common import DEFAULTS, environment, log, read_json, save_json, sha256, source_hash
 from .database import anchors, connect, truth_for
-from .features import FEATURES, pair_features, rule_score
+from .features import FEATURES, rule_score
+from .parallel import feature_batches
+from .trees import TreeModel, gpu_check
 
 
 def train(work, run, cfg, mode="learned"):
     work, run = Path(work), Path(run)
     if run.exists():
         raise ValueError(f"Run directory already exists; use a new --run: {run}")
+    gpu_report = gpu_check() if mode == "learned" and cfg.get("device", "cpu").startswith("cuda") else None
     run.mkdir(parents=True)
     metadata = {"config": cfg, "mode": mode, "features": FEATURES, "environment": environment(),
                 "source_sha256": source_hash(), "train_manifest": read_json(work / "train_manifest.json")}
+    if gpu_report:
+        metadata["gpu_check"] = gpu_report
     save_json(run / "run.json", metadata)
     try:
         frozen = subprocess.check_output([sys.executable, "-m", "pip", "freeze"], text=True)
@@ -33,7 +38,6 @@ def train(work, run, cfg, mode="learned"):
         save_json(run / "training.json", {"mode": mode, "trained_parameters": 0})
         return
 
-    import lightgbm as lgb
     started = time.perf_counter()
     db = connect(work / "train.sqlite")
     try:
@@ -45,42 +49,43 @@ def train(work, run, cfg, mode="learned"):
         x = np.lib.format.open_memmap(run / "train_x.npy", mode="w+", dtype="float32", shape=(capacity, len(FEATURES)))
         y = np.lib.format.open_memmap(run / "train_y.npy", mode="w+", dtype="int8", shape=(capacity,))
         w = np.lib.format.open_memmap(run / "train_w.npy", mode="w+", dtype="float32", shape=(capacity,))
-        blocker = Blocker(db, cfg, fit=True)
+        stats, timings = Counter(), Counter()
         offset = positives = seen = 0
         train_ids_path = run / "training_anchors.tsv"
         with train_ids_path.open("w", encoding="utf-8", newline="") as ids:
             ids.write("source1_entity_id\n")
-            for anchor in anchors(db, "fit", nanchors):
-                candidates = blocker.retrieve(anchor)
-                gold = truth_for(db, anchor.rid)
-                ids.write(anchor.entity_id + "\n")
-                for candidate in candidates:
-                    x[offset] = pair_features(anchor, candidate, len(candidates))
-                    label = candidate.record.rid in gold
-                    y[offset] = label
-                    w[offset] = 1 / max(1, len(candidates))
-                    positives += label
-                    offset += 1
-                seen += 1
-                if seen % 1000 == 0:
+            for groups, matrix, batch_stats, batch_times in feature_batches(db, anchors(db, "fit", nanchors), cfg, fit=True):
+                stats.update(batch_stats); timings.update(batch_times)
+                x[offset:offset+len(matrix)] = matrix
+                for anchor, candidates in groups:
+                    gold = truth_for(db, anchor.rid)
+                    ids.write(anchor.entity_id + "\n")
+                    labels = [c.record.rid in gold for c in candidates]
+                    size = len(labels)
+                    y[offset:offset+size] = labels
+                    w[offset:offset+size] = 1/max(1, size)
+                    positives += sum(labels); offset += size; seen += 1
+                if seen % 1024 < cfg.get("feature_batch_anchors", 128) or seen == nanchors:
                     log(f"Training features: {seen:,}/{nanchors:,} anchors, {offset:,} pairs")
         x.flush(); y.flush(); w.flush()
         if positives == 0 or positives == offset:
             raise ValueError("Training needs both positive and negative retrieved pairs; inspect audit/blocking or increase sample")
-        log(f"Fitting LightGBM on {offset:,} pairs ({positives:,} positives)")
-        dataset = lgb.Dataset(x[:offset], label=y[:offset], weight=w[:offset], feature_name=FEATURES)
-        model = lgb.train({"objective": "binary", "learning_rate": cfg["learning_rate"],
-            "num_leaves": cfg["num_leaves"], "min_data_in_leaf": cfg["min_child_samples"],
-            "num_threads": cfg["threads"], "seed": cfg["seed"], "deterministic": True,
-            "force_col_wise": True, "verbosity": -1}, dataset, num_boost_round=cfg["trees"])
-        temporary = run / "model.tmp.txt"
-        model.save_model(str(temporary))
-        os.replace(temporary, run / "model.txt")
-        metadata["model_sha256"] = sha256(run / "model.txt")
+        feature_seconds = time.perf_counter()-started
+        log(f"Fitting {cfg.get('model_backend', 'lightgbm')} on {offset:,} pairs; device={cfg.get('device', 'cpu')}")
+        model = TreeModel(cfg)
+        fit_start = time.perf_counter()
+        model.fit(x[:offset], y[:offset], w[:offset])
+        fit_seconds = time.perf_counter()-fit_start
+        temporary = run / ("temporary-"+model.filename)
+        model.save(temporary)
+        os.replace(temporary, run / model.filename)
+        metadata["model_file"] = model.filename
+        metadata["model_sha256"] = sha256(run / model.filename)
         save_json(run / "run.json", metadata)
         save_json(run / "training.json", {"anchors": seen, "pairs": offset, "positive_pairs": int(positives),
-            "seconds": time.perf_counter()-started, "blocking": dict(blocker.stats),
-            "feature_importance_gain": dict(zip(FEATURES, map(float, model.feature_importance(importance_type="gain"))))})
+            "seconds": time.perf_counter()-started, "feature_wall_seconds": feature_seconds,
+            "fit_seconds": fit_seconds, "worker_timings": dict(timings), "blocking": dict(stats),
+            "feature_importance_gain": model.importance(), "backend": model.backend, "device": cfg.get("device", "cpu")})
         del x, y, w
         # Retain memmaps for reproducibility/debugging; they are not packaged.
     finally:
@@ -96,42 +101,47 @@ class Scorer:
         if self.meta["source_sha256"] != source_hash():
             raise ValueError("Source changed since training; create a new run rather than mixing code/model versions")
         from importlib.metadata import version
-        for dependency in ("numpy", "rapidfuzz", "lightgbm"):
+        dependencies = ["numpy", "rapidfuzz", "lightgbm"]
+        if self.meta["config"].get("model_backend") == "xgboost" and self.meta["mode"] == "learned":
+            dependencies.append("xgboost")
+        for dependency in dependencies:
             if version(dependency) != self.meta["environment"][dependency]:
                 raise ValueError(f"{dependency} version changed; restore the run's environment.txt before inference")
         if not (self.run / "training.json").exists():
             raise ValueError("Training did not complete")
-        self.cfg = self.meta["config"]
+        self.cfg = {**DEFAULTS, **self.meta["config"]}
         self.model = None
         if self.meta["mode"] == "learned":
-            import lightgbm as lgb
-            if sha256(self.run / "model.txt") != self.meta["model_sha256"]:
+            filename = self.meta.get("model_file", "model.txt")
+            if sha256(self.run / filename) != self.meta["model_sha256"]:
                 raise ValueError("Model hash mismatch")
-            self.model = lgb.Booster(model_file=str(self.run / "model.txt"))
+            self.model = TreeModel(self.cfg, self.run / filename)
 
     def batches(self, db, selected, fit=False):
-        blocker = Blocker(db, self.cfg, fit=fit)
-        batch, vectors = [], []
+        batch, matrices = [], []
+        stats, timings = Counter(), Counter()
+        started = time.perf_counter()
         def score_batch():
-            if vectors:
-                values = (self.model.predict(np.asarray(vectors, dtype="float32"), num_threads=self.cfg["threads"])
-                          if self.model else [rule_score(v) for v in vectors])
-            else:
-                values = []
-            if len(values) != len(vectors) or not np.isfinite(values).all():
+            matrix = np.concatenate(matrices, axis=0) if matrices else np.empty((0, len(FEATURES)), dtype="float32")
+            tick = time.perf_counter()
+            values = (self.model.predict(matrix) if self.model else [rule_score(v) for v in matrix]) if len(matrix) else []
+            timings["model_wall_seconds"] += time.perf_counter()-tick
+            if len(values) != len(matrix) or not np.isfinite(values).all():
                 raise ValueError("Matcher returned missing or non-finite scores")
             offset = 0
             for anchor, candidates in batch:
                 scores = [float(s) for s in values[offset:offset+len(candidates)]]
                 offset += len(candidates)
                 yield anchor, candidates, scores
-        for anchor in selected:
-            candidates = blocker.retrieve(anchor)
-            batch.append((anchor, candidates))
-            vectors.extend(pair_features(anchor, c, len(candidates)) for c in candidates)
+        for groups, matrix, batch_stats, batch_times in feature_batches(db, selected, self.cfg, fit=fit):
+            batch.extend(groups); matrices.append(matrix)
+            stats.update(batch_stats); timings.update(batch_times)
             if len(batch) >= self.cfg["prediction_batch_anchors"]:
                 yield from score_batch()
-                batch.clear(); vectors.clear()
+                batch.clear(); matrices.clear()
         if batch:
             yield from score_batch()
-        self.blocking_stats = dict(blocker.stats)
+        self.blocking_stats = dict(stats)
+        self.performance = {**dict(timings), "pipeline_wall_seconds": time.perf_counter()-started,
+            "feature_workers": self.cfg["feature_workers"], "prediction_batch_anchors": self.cfg["prediction_batch_anchors"],
+            "note": "Worker seconds are summed CPU work, not elapsed time. Pipeline wall includes consumer work."}

@@ -1,5 +1,7 @@
 # 08 — Implementation status and handoff
 
+Historical handoff for the first implementation. The baseline has since run; current findings, GPU changes and commands are in [09 — Baseline analysis and optimization](09_baseline_analysis_and_optimization.md). The pending checks and 32-feature descriptions below refer to that original version.
+
 Team: RestoreBuildRun. Status as of 2026-09-27: first baseline authored; compute-PC verification pending.
 
 ## Implemented

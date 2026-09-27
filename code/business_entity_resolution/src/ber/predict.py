@@ -120,6 +120,7 @@ def predict(work, run, output):
     report = {"identity": signature, "anchors": seen, "scored_pairs": total_pairs, "threshold": threshold,
         "invocation_seconds": time.perf_counter()-started, "shards": len(completed),
         "blocking_this_invocation": getattr(scorer, "blocking_stats", {}),
+        "performance_this_invocation": getattr(scorer, "performance", {}),
         "hashes": {name: sha256(output / name) for name in OUTPUT_NAMES}}
     save_json(output / "prediction.json", report)
     log(f"Both outputs complete: {seen:,} anchors, {total_pairs:,} scored pairs")

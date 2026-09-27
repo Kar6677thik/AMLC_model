@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, OrderedDict
 from dataclasses import dataclass
 from functools import lru_cache
 from itertools import combinations
 
-from rapidfuzz.fuzz import ratio
+from rapidfuzz.fuzz import ratio, token_set_ratio
 
 from .normalize import Record, folded, index_keys
+from .text_views import view
 
 
 @dataclass(frozen=True)
@@ -21,6 +22,7 @@ class Blocker:
     def __init__(self, db, cfg, fit=False):
         self.db, self.cfg, self.fit = db, cfg, fit
         self.stats = Counter()
+        self.count_cache = OrderedDict()
 
     @lru_cache(maxsize=100000)
     def frequency(self, key):
@@ -39,6 +41,8 @@ class Blocker:
                 yield Record(*row)
 
     def retrieve(self, anchor):
+        if self.cfg.get("retrieval_version", "v1") == "v2":
+            return self._retrieve_v2(anchor)
         result = []
         self.stats["queries"] += 1
         for source in (2, 3):
@@ -80,6 +84,100 @@ class Blocker:
             if len(ranked) > self.cfg["candidates_per_source"]:
                 self.stats["capped_source_lists"] += 1
             result.extend(ranked[:self.cfg["candidates_per_source"]])
+        self.stats["empty_queries"] += not result
+        self.stats["emitted_pairs"] += len(result)
+        return result
+
+    def _counts(self, keys):
+        missing = [key for key in keys if key not in self.count_cache]
+        for start in range(0, len(missing), 800):
+            batch = missing[start:start+800]
+            sql = "SELECT key,n FROM key_counts WHERE key IN (" + ",".join("?" for _ in batch) + ")"
+            values = dict(self.db.execute(sql, batch))
+            for key in batch:
+                self.count_cache[key] = values.get(key, 0)
+        result = {key: self.count_cache[key] for key in keys}
+        for key in keys:
+            self.count_cache.move_to_end(key)
+        while len(self.count_cache) > 100000:
+            self.count_cache.popitem(last=False)
+        return result
+
+    def _retrieve_v2(self, anchor):
+        self.stats["queries"] += 1
+        result = []
+        an, aa = view(anchor.name), view(anchor.address)
+        query_cfg = dict(self.cfg)
+        expansion = self.cfg.get("query_expansion", 3)
+        for key in ("name_tokens", "address_tokens", "name_grams"):
+            query_cfg[key] *= expansion
+        for source in (2, 3):
+            keys = dict(index_keys(anchor, source, query_cfg))
+            counts = self._counts(keys)
+            live = sorted((counts[k], k, kind) for k, kind in keys.items() if counts[k])
+            small = [item for item in live if item[0] <= self.cfg["posting_limit"]]
+            # Channel diversity prevents rare accidental grams from exhausting the query budget.
+            selected, used = [], set()
+            def take(items, quota):
+                for item in items:
+                    if item[1] not in used and quota and len(selected) < self.cfg["query_keys"]:
+                        selected.append(item); used.add(item[1]); quota -= 1
+            take((x for x in small if x[2] in ("e", "n")), 3)
+            take((x for x in small if x[2] in ("a", "i")), 2)
+            take((x for x in small if x[2] == "t"), 3)
+            take((x for x in small if x[2] == "g"), 2)
+            take(small, self.cfg["query_keys"])
+            pool = Counter()
+            if selected:
+                sql = "SELECT key,rid FROM postings WHERE key IN (" + ",".join("?" for _ in selected) + ")"
+                for _, rid in self.db.execute(sql, [x[1] for x in selected]):
+                    pool[rid] += 1
+                    self.stats["posting_visits"] += 1
+            wide = [x for x in live if self.cfg["posting_limit"] < x[0] <= self.cfg["posting_limit"]*50]
+            self.stats["oversized_keys"] += sum(n > self.cfg["posting_limit"] for n, _, _ in live)
+            pairs = list(combinations(wide[:5], 2))
+            pairs.sort(key=lambda p: (p[0][2] == p[1][2], p[0][0] + p[1][0]))
+            for left, right in pairs[:self.cfg.get("intersection_budget", 2)]:
+                rows = self.db.execute("""SELECT a.rid FROM postings a JOIN postings b ON a.rid=b.rid
+                    WHERE a.key=? AND b.key=? LIMIT ?""", (left[1], right[1], self.cfg["posting_limit"]+1)).fetchall()
+                self.stats["intersection_queries"] += 1
+                if len(rows) <= self.cfg["posting_limit"]:
+                    for (rid,) in rows:
+                        pool[rid] += 2
+                else:
+                    self.stats["saturated_intersections"] += 1
+            ranked = []
+            for target in self._records(pool):
+                bn, ba = view(target.name), view(target.address)
+                name_score = (max(ratio(an.text, bn.text), ratio(an.sorted_text, bn.sorted_text)) / 100
+                              if an.text and bn.text else 0)
+                address_score = token_set_ratio(aa.text, ba.text)/100 if aa.text and ba.text else 0
+                addr_order = ratio(aa.sorted_text, ba.sorted_text)/100 if aa.text and ba.text else 0
+                nums = len(aa.digits & ba.digits)/len(aa.digits | ba.digits) if aa.digits or ba.digits else 0
+                country_conflict = bool(anchor.country and target.country and anchor.country != target.country)
+                score = .40*name_score + .30*address_score + .15*addr_order + .10*nums + .05*min(pool[target.rid], 3)/3
+                score -= .20*country_conflict
+                candidate = Candidate(target, score, pool[target.rid])
+                ranked.append((candidate, name_score, address_score + .2*nums))
+            ranked.sort(key=lambda x: (-x[0].retrieval_score, x[0].record.entity_id))
+            self.stats["precap_records"] += len(ranked)
+            cap = self.cfg["candidates_per_source"]
+            self.stats["capped_source_lists"] += len(ranked) > cap
+            keep, seen = [], set()
+            quota = max(1, cap//8)
+            def preserve(items, budget):
+                for row in items:
+                    if len(keep) >= cap or budget <= 0:
+                        break
+                    candidate = row[0]
+                    if candidate.record.rid not in seen:
+                        keep.append(candidate); seen.add(candidate.record.rid); budget -= 1
+            preserve(ranked, max(1, cap-2*quota))
+            preserve(sorted((r for r in ranked if r[1] >= .4), key=lambda r: (-r[2], -r[1], r[0].record.entity_id)), quota)
+            preserve(sorted(ranked, key=lambda r: (-r[1], -r[2], r[0].record.entity_id)), quota)
+            preserve(ranked, cap)
+            keep.sort(key=lambda c: (-c.retrieval_score, c.record.entity_id))
+            result.extend(keep)
         self.stats["empty_queries"] += not result
         self.stats["emitted_pairs"] += len(result)
         return result
