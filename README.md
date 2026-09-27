@@ -1,16 +1,16 @@
 # RestoreBuildRun — Amazon ML Challenge 2026
 
-This repository contains the challenge materials, plans and matching pipeline. **Baseline-001 scored 0.806 on the submitted run (user reported). Optimized-002 improved development F0.5 from 0.84050 to 0.86730**, but its test benchmark projects 9.21 hours of scoring. The next implementation probes cheaper retrieval before training another GPU model; its speed and accuracy remain to be measured on the compute PC.
+This repository contains the challenge materials, plans and matching pipeline. **Baseline-001 scored 0.806 on the submitted run (user reported). Optimized-002 improved development F0.5 from 0.84050 to 0.86730.** A subsequent probe showed that string preparation/ranking dominates its runtime. The current experiment preserves full v2 retrieval, removes unused ranking work, and reuses saved fit features to compare GPU models and an ensemble. New results remain to be measured.
 
 ## Run the implementation
 
-Read the [fast retrieval experiment guide](docs/10_fast_retrieval_experiment.md) and [implementation README](code/business_entity_resolution/README.md). On the Windows compute PC, from the repository root:
+Read the [quality-first plan](docs/11_quality_first_plan.md) and [implementation README](code/business_entity_resolution/README.md). On the Windows compute PC, from the repository root:
 
 ```powershell
-.\scripts\Run-Fast.ps1 -Dataset 'D:\AMLC\student_resource\dataset' -RunId optimized-003 -Phase Probe
+.\scripts\Run-Quality.ps1 -Dataset 'D:\AMLC\student_resource\dataset' -StudyId quality-004 -Phase Evaluate
 ```
 
-Replace the dataset path with its actual location. This runs synthetic tests and compares five retrieval recipes on existing indexes. It stops before training. If a recipe meets speed/recall gates, continue with `-Phase Evaluate -SkipInstall`, review model results, then `-Phase Predict -SkipInstall`. The final phase enforces score and actual deadline gates. Preserve both earlier runs and their original code. All compute stays on that PC.
+Replace the dataset path. This runs tests, verifies CUDA, reuses optimized-002's saved fit arrays, compares full-quality matchers and benchmarks the best model. It stops before prediction. After reviewing `runs/quality-004/quality.json`, use `-Phase Predict -SkipInstall` if a model is selected. Preserve optimized-002's arrays and all earlier outputs. All compute stays on that PC.
 
 ## Recommended solution
 
@@ -31,6 +31,7 @@ The critical requirements are: include every test Source 1 entity, support multi
 | [07 — Submission and documentation](docs/07_submission_and_documentation.md) | Release checks, exact package layout, and methodology write-up plan |
 | [09 — Baseline analysis and optimization](docs/09_baseline_analysis_and_optimization.md) | Measured bottlenecks, implemented improvements, GPU settings and next-run commands |
 | [10 — Faster retrieval](docs/10_fast_retrieval_experiment.md) | Optimized-002 results, conditional retrieval, probe selection and deadline gates |
+| [11 — Quality-first plan](docs/11_quality_first_plan.md) | Probe findings, compact ranking, saved-feature refits, ensemble and deadline-aware selection |
 
 ## Current evidence and boundaries
 

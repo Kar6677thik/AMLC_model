@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import json
 import subprocess
+from pathlib import Path
 import numpy as np
 from .features import FEATURES
+from .common import read_json, sha256
 
 
 def assert_cuda(model):
@@ -42,10 +44,27 @@ def gpu_check():
 class TreeModel:
     def __init__(self, cfg, path=None):
         self.cfg, self.model = cfg, None
+        self.members = []
         self.backend = cfg.get("model_backend", "lightgbm")
         self.gpu = cfg.get("device", "cpu").startswith("cuda")
         if path:
-            if self.backend == "xgboost":
+            if self.backend == "xgboost_ensemble":
+                manifest = read_json(path)
+                for entry in manifest["members"]:
+                    filename = entry["filename"]
+                    if Path(filename).name != filename or not filename.endswith(".ubj"):
+                        raise ValueError("Invalid ensemble member filename")
+                    member_path = Path(path).parent / filename
+                    if sha256(member_path) != entry["sha256"]:
+                        raise ValueError("Ensemble member hash mismatch")
+                    weight = float(entry["weight"])
+                    if not np.isfinite(weight) or weight <= 0:
+                        raise ValueError("Ensemble weights must be finite and positive")
+                    member = TreeModel(dict(cfg, model_backend="xgboost"), member_path)
+                    self.members.append((weight, member))
+                if not self.members or abs(sum(w for w, _ in self.members)-1) > 1e-9:
+                    raise ValueError("Ensemble weights must sum to one")
+            elif self.backend == "xgboost":
                 import xgboost as xgb
                 self.model = xgb.Booster()
                 self.model.load_model(path)
@@ -58,10 +77,14 @@ class TreeModel:
 
     @property
     def filename(self):
+        if self.backend == "xgboost_ensemble":
+            return "ensemble.json"
         return "model.ubj" if self.backend == "xgboost" else "model.txt"
 
     def fit(self, x, y, weights):
         cfg = self.cfg
+        if self.backend == "xgboost_ensemble":
+            raise ValueError("Fit individual members, then build an ensemble")
         if self.backend == "xgboost":
             import xgboost as xgb
             data = xgb.QuantileDMatrix(x, label=y, weight=weights, feature_names=FEATURES,
@@ -82,6 +105,8 @@ class TreeModel:
                 "force_col_wise": True, "verbosity": -1}, data, num_boost_round=cfg["trees"])
 
     def predict(self, matrix):
+        if self.backend == "xgboost_ensemble":
+            return sum(weight * member.predict(matrix).astype("float64") for weight, member in self.members)
         if self.backend == "xgboost":
             import xgboost as xgb
             result = self.model.predict(xgb.DMatrix(matrix, feature_names=FEATURES, nthread=self.cfg["threads"]))

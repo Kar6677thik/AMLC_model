@@ -22,10 +22,12 @@ from ber.predict import predict
 from ber.validate import validate
 from ber.features import FEATURES
 from ber.parallel import feature_batches
-from ber.text_views import view
+from ber.text_views import view, ranking_name, ranking_address
 from ber.trees import assert_cuda
 from ber.blocking import Blocker
 from ber.retrieval_probe import select_variant, retrieval_probe, verify_probe
+from ber.quality import load_training_features, refit, ensemble, assert_same_candidates
+from ber.trees import TreeModel
 
 
 def write_tsv(path, header, rows):
@@ -89,6 +91,13 @@ class MetricTests(unittest.TestCase):
         self.assertEqual(view("17 road 560001").postal, frozenset({"560001"}))
         self.assertEqual(view("17 road 560001").first_number, "17")
         self.assertEqual(len(FEATURES), 46)
+
+    def test_compact_views_match_full_views(self):
+        for text in ("", "alpha alpha ltd", "école 17 rue 75001", "भारत १२३", "a12 12 b7 560001"):
+            with self.subTest(text=text):
+                full = view(text)
+                self.assertEqual(ranking_name(text), (full.text, full.sorted_text))
+                self.assertEqual(ranking_address(text), (full.text, full.sorted_text, full.digits))
 
     def test_cuda_request_rejects_cpu_fallback(self):
         model = Mock()
@@ -244,6 +253,22 @@ class PipelineTests(unittest.TestCase):
         finally:
             db.close()
 
+    def test_compact_ranking_preserves_candidates_scores_and_features(self):
+        db = connect(self.work / "test.sqlite")
+        try:
+            selected = list(anchors(db))
+            for version in ("v2", "v3"):
+                cfg = dict(self.cfg, retrieval_version=version, query_expansion=3,
+                           posting_limit=2, feature_batch_anchors=2)
+                legacy = list(feature_batches(db, iter(selected), dict(cfg, ranking_backend="legacy")))
+                compact = list(feature_batches(db, iter(selected), dict(cfg, ranking_backend="compact")))
+                for left, right in zip(legacy, compact):
+                    self.assertEqual(left[0], right[0])
+                    np.testing.assert_array_equal(left[1], right[1])
+                    self.assertEqual(left[2], right[2])
+        finally:
+            db.close()
+
     def test_probe_selection_is_immutable_and_requires_matching_config(self):
         output = self.root / "probe"
         # Tiny functional fixture, serial workers; min rate avoids depending on machine speed.
@@ -271,6 +296,38 @@ class PipelineTests(unittest.TestCase):
         archive = package(self.work, run, output, self.root / "xgb-dist", "Synthetic Test Member")
         with zipfile.ZipFile(archive) as z:
             self.assertIn("code/business_entity_resolution/assets/model.ubj", z.namelist())
+
+    @unittest.skipUnless(importlib.util.find_spec("xgboost"), "Optional XGBoost is not installed")
+    def test_saved_features_refit_ensemble_and_tamper_detection(self):
+        self.cfg.update(model_backend="xgboost", device="cpu", retrieval_version="v2")
+        source = self.root / "source"
+        train(self.work, source, self.cfg)
+        evaluate(self.work, source)
+        loaded = load_training_features(self.work, source)
+        trial = self.root / "refit"
+        refit(trial, dict(self.cfg, trees=6, ranking_backend="compact"), source, loaded)
+        evaluate(self.work, trial)
+        self.assertGreater(assert_same_candidates(source / "dev_scores.jsonl", trial / "dev_scores.jsonl"), 0)
+        with self.assertRaisesRegex(ValueError, "changing candidates_per_source"):
+            refit(self.root / "invalid-refit", dict(self.cfg, candidates_per_source=5), source, loaded)
+        combined = self.root / "combined"
+        ensemble(combined, [trial, trial])
+        matrix = np.asarray(loaded[2][0][:5])
+        single = TreeModel(self.cfg, trial / "model.ubj")
+        mixed = TreeModel(dict(self.cfg, model_backend="xgboost_ensemble"), combined / "ensemble.json")
+        np.testing.assert_array_equal(mixed.predict(matrix), single.predict(matrix))
+        evaluate(self.work, combined)
+        output = self.root / "combined-output"
+        predict(self.work, combined, output)
+        archive = package(self.work, combined, output, self.root / "combined-dist", "Synthetic Test Member")
+        with zipfile.ZipFile(archive) as z:
+            for name in ("ensemble.json", "member-0.ubj", "member-1.ubj"):
+                self.assertIn("code/business_entity_resolution/assets/"+name, z.namelist())
+        with (combined / "member-0.ubj").open("ab") as stream:
+            stream.write(b"corrupt")
+        with self.assertRaisesRegex(ValueError, "member hash mismatch"):
+            TreeModel(dict(self.cfg, model_backend="xgboost_ensemble"), combined / "ensemble.json")
+        del loaded, matrix, single, mixed
 
 
 if __name__ == "__main__":

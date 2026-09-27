@@ -41,6 +41,16 @@ def parser():
     p.add_argument("--test-limit", type=int, default=3000)
     p.add_argument("--min-rate", type=float, default=150.0)
     p.add_argument("--check", action="store_true", help="Verify a completed probe before using its selected config")
+    p = add("quality-sweep", dataset=True, output=True)
+    p.add_argument("--source-run", required=True, type=Path)
+    p.add_argument("--deadline", default="2026-09-27T23:59:00+05:30")
+    p.add_argument("--reserve-minutes", type=int, default=60)
+    p.add_argument("--margin", type=float, default=1.35)
+    p.add_argument("--workers", type=int, default=6)
+    p = subs.add_parser("quality-check")
+    p.add_argument("--output", required=True, type=Path)
+    p = add("rebuild-ensemble", dataset=True, output=True)
+    p.add_argument("--assets", required=True, type=Path)
     add("validate", output=True)
     p = add("package", run=True, output=True)
     p.add_argument("--destination", required=True, type=Path)
@@ -70,6 +80,16 @@ def main(argv=None):
             else:
                 retrieval_probe(args.work, load_config(args.config), args.output,
                                 args.dev_limit, args.test_limit, args.min_rate)
+        elif args.command == "quality-sweep":
+            from .quality import quality_sweep
+            quality_sweep(args.dataset, args.work, args.source_run, args.output,
+                          args.deadline, args.reserve_minutes, args.margin, args.workers)
+        elif args.command == "quality-check":
+            from .quality import verify_quality
+            print(verify_quality(args.output))
+        elif args.command == "rebuild-ensemble":
+            from .quality import rebuild_ensemble
+            print(rebuild_ensemble(args.dataset, args.work, args.assets, args.output))
         elif args.command == "prepare":
             cfg = load_config(args.config)
             for split in (["train", "test"] if args.split == "both" else [args.split]):

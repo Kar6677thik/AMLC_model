@@ -9,7 +9,7 @@ import time
 from rapidfuzz.fuzz import ratio, token_set_ratio
 
 from .normalize import Record, folded, index_keys
-from .text_views import view
+from .text_views import view, ranking_name, ranking_address
 
 
 @dataclass(frozen=True)
@@ -210,12 +210,18 @@ class Blocker:
         tick = time.perf_counter()
         ranked = []
         for target in records:
-            bn, ba = view(target.name), view(target.address)
-            name_score = (max(ratio(an.text, bn.text), ratio(an.sorted_text, bn.sorted_text)) / 100
-                          if an.text and bn.text else 0)
-            address_score = token_set_ratio(aa.text, ba.text)/100 if aa.text and ba.text else 0
-            addr_order = ratio(aa.sorted_text, ba.sorted_text)/100 if aa.text and ba.text else 0
-            nums = len(aa.digits & ba.digits)/len(aa.digits | ba.digits) if aa.digits or ba.digits else 0
+            if self.cfg.get("ranking_backend", "compact") == "legacy":
+                bn, ba = view(target.name), view(target.address)
+                name, name_ordered = bn.text, bn.sorted_text
+                address, address_ordered, digits = ba.text, ba.sorted_text, ba.digits
+            else:
+                name, name_ordered = ranking_name(target.name)
+                address, address_ordered, digits = ranking_address(target.address)
+            name_score = (max(ratio(an.text, name), ratio(an.sorted_text, name_ordered)) / 100
+                          if an.text and name else 0)
+            address_score = token_set_ratio(aa.text, address)/100 if aa.text and address else 0
+            addr_order = ratio(aa.sorted_text, address_ordered)/100 if aa.text and address else 0
+            nums = len(aa.digits & digits)/len(aa.digits | digits) if aa.digits or digits else 0
             conflict = bool(anchor.country and target.country and anchor.country != target.country)
             score = .40*name_score + .30*address_score + .15*addr_order + .10*nums + .05*min(pool[target.rid], 3)/3
             score -= .20*conflict

@@ -19,6 +19,8 @@ def package(work, run, output, destination, members, team="RestoreBuildRun"):
     meta = read_json(run / "run.json")
     if meta["source_sha256"] != source_hash():
         raise ValueError("Cannot package different source from the trained run")
+    if meta["mode"] == "learned" and sha256(run / meta.get("model_file", "model.txt")) != meta["model_sha256"]:
+        raise ValueError("Cannot package a changed model")
     prediction = read_json(output / "prediction.json")
     if prediction["identity"]["run_sha256"] != sha256(run / "run.json"):
         raise ValueError("Output belongs to a different run")
@@ -27,7 +29,7 @@ def package(work, run, output, destination, members, team="RestoreBuildRun"):
     validation = validate(work, output)
     environment_lock = (run / "environment.txt").read_text(encoding="utf-8").lower()
     dependencies = ["numpy", "rapidfuzz", "lightgbm"]
-    if meta["config"].get("model_backend") == "xgboost" and meta["mode"] == "learned":
+    if meta["config"].get("model_backend", "").startswith("xgboost") and meta["mode"] == "learned":
         dependencies.append("xgboost")
     for dependency in dependencies:
         if not any(line.startswith(dependency + "==") for line in environment_lock.splitlines()):
@@ -70,6 +72,8 @@ Features comprise name/address string and token similarity, generic abbreviation
 
 For retrieval v3, small posting lists are selected across name, address and trigram channels with a reduced query budget. Frequent-key intersections run only when the ordinary candidate pool is too small or its strongest lexical score is below the configured threshold. Probe selection, when used, compares development candidate recall/oracles and unlabeled test throughput; final matcher thresholds still require separate development calibration.
 
+Compact ranking computes only the text views used by retrieval; final pair features remain unchanged. When the selected backend is xgboost_ensemble, the manifest records component models, hashes and weights; its averaged score uses a separately calibrated development threshold. Feature reuse, when used, is recorded in assets/run.json and imports only preserved fit-partition arrays. Development labels select models and thresholds, never fit tree parameters.
+
 The metric is per-S1 macro F0.5, including singleton credit. The threshold grid is selected on development only; an optional holdout assessment never retunes it. No neural checkpoint is deployed by this baseline. Code and trained baseline artifacts are provided under MIT; third-party notices are included.
 
 ## 5. Results & Error Analysis
@@ -105,9 +109,14 @@ All development threshold comparisons, candidate counts, and slices are in the b
             archive.write(path, prefix + path.relative_to(source_dir).as_posix())
         archive.writestr(prefix + "configs/final.json", json.dumps(meta["config"], indent=2) + "\n")
         archive.write(run / "environment.txt", prefix + "requirements.txt")
-        for name in ("run.json", "training.json", "decision.json", "model.txt", "model.ubj", "dev_report.json", "holdout_report.json", "benchmark_test.json", "environment.txt", "training_anchors.tsv"):
+        for name in ("run.json", "training.json", "decision.json", "model.txt", "model.ubj", "ensemble.json", "dev_report.json", "holdout_report.json", "benchmark_test.json", "environment.txt", "training_anchors.tsv"):
             if (run / name).exists():
                 archive.write(run / name, prefix + "assets/" + name)
+        if meta["config"].get("model_backend") == "xgboost_ensemble":
+            from .trees import TreeModel
+            TreeModel(meta["config"], run / "ensemble.json")  # Verify all member hashes before release.
+            for member in read_json(run / "ensemble.json")["members"]:
+                archive.write(run / member["filename"], prefix + "assets/" + member["filename"])
         for name in ("train_manifest.json", "test_manifest.json"):
             archive.write(work / name, prefix + "assets/" + name)
         for name in ("prediction.json", "validation.json"):

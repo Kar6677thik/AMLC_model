@@ -102,7 +102,7 @@ class Scorer:
             raise ValueError("Source changed since training; create a new run rather than mixing code/model versions")
         from importlib.metadata import version
         dependencies = ["numpy", "rapidfuzz", "lightgbm"]
-        if self.meta["config"].get("model_backend") == "xgboost" and self.meta["mode"] == "learned":
+        if self.meta["config"].get("model_backend", "").startswith("xgboost") and self.meta["mode"] == "learned":
             dependencies.append("xgboost")
         for dependency in dependencies:
             if version(dependency) != self.meta["environment"][dependency]:

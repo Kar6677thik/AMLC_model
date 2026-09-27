@@ -20,6 +20,7 @@ DEFAULTS = {
     "query_expansion": 1, "intersection_budget": 3,
     "max_depth": 6, "max_bin": 128,
     "intersection_min_pool": 8, "intersection_min_score": 0.70,
+    "ranking_backend": "compact",
 }
 SCHEMA_VERSION = 1
 
@@ -34,8 +35,8 @@ def load_config(path=None):
         cfg.update(supplied)
     for key, default in DEFAULTS.items():
         if isinstance(default, str):
-            allowed = {"retrieval_version": {"v1", "v2", "v3"}, "model_backend": {"lightgbm", "xgboost"},
-                       "device": {"cpu", "cuda:0"}}
+            allowed = {"retrieval_version": {"v1", "v2", "v3"}, "model_backend": {"lightgbm", "xgboost", "xgboost_ensemble"},
+                       "device": {"cpu", "cuda:0"}, "ranking_backend": {"compact", "legacy"}}
             if cfg[key] not in allowed[key]:
                 raise ValueError(f"{key} must be one of {sorted(allowed[key])}")
         elif isinstance(default, int):
@@ -43,7 +44,7 @@ def load_config(path=None):
                 raise ValueError(f"{key} must be a positive integer (seed/intersection_budget may be zero)")
         elif not isinstance(cfg[key], (int, float)) or not 0 < cfg[key] <= 1:
             raise ValueError(f"{key} must lie in (0, 1]")
-    if cfg["device"].startswith("cuda") and cfg["model_backend"] != "xgboost":
+    if cfg["device"].startswith("cuda") and not cfg["model_backend"].startswith("xgboost"):
         raise ValueError("CUDA requires model_backend=xgboost; LightGBM remains the CPU fallback")
     return cfg
 

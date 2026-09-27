@@ -2,9 +2,19 @@
 
 Implemented: streaming input audit, SQLite-backed lexical retrieval, grouped fit/dev/holdout partitions, 46 pair features, LightGBM CPU and XGBoost CUDA matchers (or rules), macro F0.5 threshold tuning, resumable inference, strict output validation, and final zip generation. Optimized configurations add broader retrieval and Windows-spawn feature workers.
 
-**Execution status:** baseline-001 produced development macro F0.5 0.84050 and user-reported submission score 0.806. Optimized-002 reached 0.86730 development F0.5 with verified CUDA, but its 52.24 anchors/second benchmark is too slow for the deadline. Retrieval v3 and the new probe launcher are authored but not yet runtime-verified. All computation remains on the separate compute PC.
+**Execution status:** baseline-001 produced development macro F0.5 0.84050 and user-reported submission score 0.806. Optimized-002 reached 0.86730 development F0.5 with verified CUDA. The subsequent retrieval probe completed, but no variant passed both speed and recall gates. Compact ranking, saved-feature refits and ensemble selection are the next authored changes; their runtime verification remains on the separate compute PC.
 
-## Current experiment: probe cheaper retrieval first
+## Current experiment: full-quality retrieval and GPU model comparison
+
+```powershell
+.\scripts\Run-Quality.ps1 -Dataset 'D:\AMLC\student_resource\dataset' -StudyId quality-004 -Phase Evaluate
+```
+
+Run from the repository root on the compute PC. Keep the original `runs/optimized-002` including `.npy` arrays and `dev_scores.jsonl`; the command reuses its fit data and verifies the new control's development candidates. It compares the original GPU recipe, a deeper model and an equal-weight ensemble when the measured runtime permits. Compact ranking avoids preparing unused features for raw retrieval targets while preserving the ranking formula. Default worker count is six, configurable with `-Workers`.
+
+Review `runs/quality-004/quality.json`. If a model is selected, repeat with `-Phase Predict -SkipInstall`; prediction and release checks enforce the actual deadline. `-SourceRun` and `-Work` override the saved run/index locations. See the [quality-first plan](../../docs/11_quality_first_plan.md) for exact gates, provenance, limitations and commands. Original runs remain immutable.
+
+## Previous experiment: probe cheaper retrieval
 
 ```powershell
 .\scripts\Run-Fast.ps1 -Dataset 'D:\AMLC\student_resource\dataset' -RunId optimized-003 -Phase Probe
@@ -173,6 +183,6 @@ python -m ber predict --dataset $Data --work 'D:\AMLC\reproduce\work' --run asse
 python -m ber validate --work 'D:\AMLC\reproduce\work' --output 'D:\AMLC\reproduce\output'
 ```
 
-For a full rebuild, run `ber run` with `configs/final.json`, a fresh run directory and the original mode from `assets/run.json`. If the original development evaluation used a custom `--limit`, reproduce that same limit with separate train/evaluate/predict commands. Compare the matching and candidate TSV hashes against `assets/prediction.json`; score-ledger gzip byte hashes may differ because gzip embeds creation metadata.
+For a single-model full rebuild, run `ber run` with `configs/final.json`, a fresh run directory and the original mode from `assets/run.json`. For an ensemble, use `ber rebuild-ensemble --dataset $Data --work $Work --assets assets --output 'D:\AMLC\rebuild'`; the resulting model run is `D:\AMLC\rebuild\final`, ready for the normal predict/validate commands. This reconstructs fit features and member models from organizer data without the original saved arrays. Rebuilt models are recalibrated on development; verify their outputs rather than assuming bit-for-bit GPU training reproducibility. If the original development evaluation used a custom `--limit`, reproduce that same limit with separate stage commands. Compare the matching and candidate TSV hashes against `assets/prediction.json`; score-ledger gzip byte hashes may differ because gzip embeds creation metadata.
 
 The package excludes raw data, training feature arrays and the large score ledger. Keep the original ledger locally for audit. The source regenerates it; neither its omission from the zip nor the reduced packaging footprint changes the candidate export.

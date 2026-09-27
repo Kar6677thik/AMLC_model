@@ -8,6 +8,19 @@ from functools import lru_cache
 from .normalize import core_name, folded
 
 
+@lru_cache(maxsize=50000)
+def ranking_name(text):
+    """Only fields needed to rank the much larger raw retrieval pool."""
+    text = fold_text(text)
+    return text, " ".join(sorted(set(text.split())))
+
+
+@lru_cache(maxsize=50000)
+def ranking_address(text):
+    text, ordered = ranking_name(text)
+    return text, ordered, frozenset(re.findall(r"\d+", text))
+
+
 @lru_cache(maxsize=60000)
 def fold_text(text):
     # Original folded() loops in Python over every character, including ASCII.
