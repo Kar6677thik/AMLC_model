@@ -36,6 +36,11 @@ def parser():
     p.add_argument("--limit", type=int, default=1000)
     p = add("retrieval-audit", config=True, output=True)
     p.add_argument("--limit", type=int, default=1000)
+    p = add("retrieval-probe", config=True, output=True)
+    p.add_argument("--dev-limit", type=int, default=2000)
+    p.add_argument("--test-limit", type=int, default=3000)
+    p.add_argument("--min-rate", type=float, default=150.0)
+    p.add_argument("--check", action="store_true", help="Verify a completed probe before using its selected config")
     add("validate", output=True)
     p = add("package", run=True, output=True)
     p.add_argument("--destination", required=True, type=Path)
@@ -57,6 +62,14 @@ def main(argv=None):
         elif args.command == "retrieval-audit":
             from .retrieval_audit import retrieval_audit
             retrieval_audit(args.work, load_config(args.config), args.output, args.limit)
+        elif args.command == "retrieval-probe":
+            from .retrieval_probe import retrieval_probe, verify_probe
+            if args.check:
+                verify_probe(args.work, args.output)
+                log("Probe source, index signatures and selected configuration verified")
+            else:
+                retrieval_probe(args.work, load_config(args.config), args.output,
+                                args.dev_limit, args.test_limit, args.min_rate)
         elif args.command == "prepare":
             cfg = load_config(args.config)
             for split in (["train", "test"] if args.split == "both" else [args.split]):

@@ -5,8 +5,12 @@ param(
     [ValidateSet('Evaluate', 'Predict', 'All')][string]$Phase = 'Evaluate',
     [string]$Python = 'python',
     [string]$Work = '',
+    [string]$Config = '',
     [ValidateRange(0.0, 1.0)][double]$MinDevScore = 0.8404988085983199,
     [ValidateRange(0.01, 24.0)][double]$MaxScoringHours = 3.0,
+    [ValidateRange(1.0, 3.0)][double]$TimingMargin = 2.0,
+    [string]$Deadline = '',
+    [ValidateRange(0, 240)][int]$ReserveMinutes = 60,
     [switch]$AuditRetrieval,
     [switch]$SkipInstall
 )
@@ -19,8 +23,10 @@ $VenvRoot = Join-Path $RepoRoot '.venv'
 $RunPath = Join-Path $RepoRoot "runs/$RunId"
 $OutputPath = Join-Path $RepoRoot "output/$RunId"
 $ConfigPath = Join-Path $PackageRoot "configs/optimized-$Backend.json"
+if ($Config) { $ConfigPath = (Resolve-Path -LiteralPath $Config).Path }
 $DataPath = (Resolve-Path -LiteralPath $Dataset).Path
 if (-not $Work) { $Work = Join-Path $RepoRoot 'artifacts/baseline' }
+$Work = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Work)
 Set-Location -LiteralPath $RepoRoot
 
 function Invoke-Checked {
@@ -43,6 +49,16 @@ $env:OPENBLAS_NUM_THREADS = '1'
 Invoke-Checked -Executable $Runtime -Arguments @('-m', 'unittest', 'discover', '-s', (Join-Path $PackageRoot 'tests'), '-v')
 if ($Backend -eq 'gpu') {
     Invoke-Checked -Executable $Runtime -Arguments @('-m', 'ber', 'check-gpu')
+}
+
+if (Test-Path -LiteralPath (Join-Path $RunPath 'run.json')) {
+    $Recorded = Get-Content -Raw -LiteralPath (Join-Path $RunPath 'run.json') | ConvertFrom-Json
+    $Requested = Get-Content -Raw -LiteralPath $ConfigPath | ConvertFrom-Json
+    foreach ($Property in $Requested.PSObject.Properties) {
+        if ($Recorded.config.($Property.Name) -ne $Property.Value) {
+            throw "RunId uses a different configuration ($($Property.Name)). Use a new RunId."
+        }
+    }
 }
 
 if ($Phase -ne 'Predict') {
@@ -73,10 +89,17 @@ if ($Phase -eq 'Evaluate') {
     Write-Host 'Evaluation phase complete. Review the reports, then rerun with -Phase Predict -SkipInstall.'
     exit 0
 }
-if ($Dev.metrics.macro_f05 -le $MinDevScore) { throw 'Development score did not beat the baseline. Keep the submitted baseline and inspect the report.' }
-if ($null -eq $Bench.conservative_scoring_seconds_2x) { throw 'Benchmark produced no valid throughput estimate.' }
-if (($Bench.conservative_scoring_seconds_2x / 3600) -gt $MaxScoringHours) {
-    throw "Conservative scoring ETA exceeds $MaxScoringHours hours. Review worker/budget settings and deadline before changing -MaxScoringHours. Export/validation need extra time."
+if ($Dev.metrics.macro_f05 -le $MinDevScore) { throw "Development score did not exceed the required floor ($MinDevScore). Keep the submitted baseline and inspect the report." }
+if ($null -eq $Bench.extrapolated_scoring_seconds -or $Bench.extrapolated_scoring_seconds -le 0) { throw 'Benchmark produced no valid throughput estimate.' }
+$EstimatedSeconds = $Bench.extrapolated_scoring_seconds * $TimingMargin
+if (($EstimatedSeconds / 3600) -gt $MaxScoringHours) {
+    throw "Scoring ETA with ${TimingMargin}x margin exceeds $MaxScoringHours hours. Export/validation need extra time."
+}
+if ($Deadline) {
+    $RemainingSeconds = ([DateTimeOffset]::Parse($Deadline) - [DateTimeOffset]::Now).TotalSeconds - $ReserveMinutes * 60
+    if ($EstimatedSeconds -gt $RemainingSeconds) {
+        throw "Scoring ETA with ${TimingMargin}x margin cannot meet $Deadline while reserving $ReserveMinutes minutes for release. Keep the existing submission."
+    }
 }
 Invoke-Checked -Executable $Runtime -Arguments @('-m', 'ber', 'predict', '--dataset', $DataPath, '--work', $Work, '--run', $RunPath, '--output', $OutputPath)
 Invoke-Checked -Executable $Runtime -Arguments @('-m', 'ber', 'validate', '--work', $Work, '--output', $OutputPath)

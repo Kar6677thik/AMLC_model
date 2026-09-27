@@ -68,6 +68,8 @@ Source-specific global keys cover exact name/address, normalized name, informati
 ## 4. Matching Model
 Features comprise name/address string and token similarity, generic abbreviation views, numeric/postal/first-number agreement and conflict, missingness, country evidence, source, retrieval evidence, and candidate counts. Learned mode uses **{meta['config'].get('model_backend', 'lightgbm')}**, device **{meta['config'].get('device', 'cpu')}**, with per-anchor normalized pair weights on sampled complete anchor groups. Rules mode uses a conservative fixed lexical scoring function. The selected mode is **{meta['mode']}**, with frozen decision threshold **{dev['threshold']}**. Retrieval version: **{meta['config'].get('retrieval_version', 'v1')}**. In v2, expanded query keys reuse the original index and channel-diverse ranking preserves address/name alternatives.
 
+For retrieval v3, small posting lists are selected across name, address and trigram channels with a reduced query budget. Frequent-key intersections run only when the ordinary candidate pool is too small or its strongest lexical score is below the configured threshold. Probe selection, when used, compares development candidate recall/oracles and unlabeled test throughput; final matcher thresholds still require separate development calibration.
+
 The metric is per-S1 macro F0.5, including singleton credit. The threshold grid is selected on development only; an optional holdout assessment never retunes it. No neural checkpoint is deployed by this baseline. Code and trained baseline artifacts are provided under MIT; third-party notices are included.
 
 ## 5. Results & Error Analysis

@@ -24,6 +24,8 @@ from ber.features import FEATURES
 from ber.parallel import feature_batches
 from ber.text_views import view
 from ber.trees import assert_cuda
+from ber.blocking import Blocker
+from ber.retrieval_probe import select_variant, retrieval_probe, verify_probe
 
 
 def write_tsv(path, header, rows):
@@ -95,6 +97,17 @@ class MetricTests(unittest.TestCase):
             assert_cuda(model)
         model.save_config.return_value = '{"learner":{"generic_param":{"device":"cuda:0"}}}'
         self.assertEqual(assert_cuda(model), "cuda:0")
+
+    def test_probe_rejects_fast_country_regression_and_slow_variants(self):
+        def result(name, rate, india=.85):
+            return {"name": name, "test": {"queries_per_second": rate},
+                    "dev": {"metrics": {"oracle_macro_f05": .91, "candidate_micro_recall": .80, "mean_candidates": 40},
+                            "countries": {"india": {"oracle_macro_f05": india, "candidate_micro_recall": .70}}}}
+        results = [result("control", 50), result("fast-bad-india", 300, .80),
+                   result("slow", 100), result("acceptable", 180)]
+        self.assertEqual(select_variant(results)["name"], "acceptable")
+        self.assertTrue(results[1]["rejection_reasons"])
+        self.assertIsNone(select_variant(results[:3]))
 
 
 class PipelineTests(unittest.TestCase):
@@ -190,23 +203,65 @@ class PipelineTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Unknown target ID"):
             validate(self.work, output)
 
-    def test_parallel_v2_features_preserve_order_and_values(self):
+    def test_parallel_features_preserve_order_and_values(self):
         db = connect(self.work / "test.sqlite")
         cfg = dict(self.cfg, retrieval_version="v2", query_expansion=3, feature_batch_anchors=2)
         try:
             selected = list(anchors(db))
-            serial = list(feature_batches(db, iter(selected), dict(cfg, feature_workers=1)))
-            parallel = list(feature_batches(db, iter(selected), dict(cfg, feature_workers=2)))
-            self.assertEqual(len(serial), len(parallel))
-            for a, b in zip(serial, parallel):
-                self.assertEqual(a[0], b[0])
-                np.testing.assert_array_equal(a[1], b[1])
-                self.assertEqual(a[2], b[2])
-                for _, candidates in a[0]:
-                    self.assertLessEqual(len(candidates), 2*cfg["candidates_per_source"])
-                    self.assertEqual(len(candidates), len({c.record.rid for c in candidates}))
+            for version in ("v2", "v3"):
+                cfg["retrieval_version"] = version
+                with self.subTest(version=version):
+                    serial = list(feature_batches(db, iter(selected), dict(cfg, feature_workers=1)))
+                    parallel = list(feature_batches(db, iter(selected), dict(cfg, feature_workers=2)))
+                    self.assertEqual(len(serial), len(parallel))
+                    for a, b in zip(serial, parallel):
+                        self.assertEqual(a[0], b[0])
+                        np.testing.assert_array_equal(a[1], b[1])
+                        self.assertEqual(a[2], b[2])
+                        for _, candidates in a[0]:
+                            self.assertLessEqual(len(candidates), 2*cfg["candidates_per_source"])
+                            self.assertEqual(len(candidates), len({c.record.rid for c in candidates}))
         finally:
             db.close()
+
+    def test_adaptive_intersections_skip_strong_and_try_weak_sources(self):
+        db = connect(self.work / "test.sqlite")
+        cfg = dict(self.cfg, retrieval_version="v3", posting_limit=2, query_expansion=3,
+                   query_keys=6, intersection_min_pool=1, intersection_budget=1)
+        try:
+            anchor = list(anchors(db))[1]  # Exact name and address match in both target sources.
+            strong = Blocker(db, cfg)
+            candidates = strong.retrieve(anchor)
+            self.assertEqual(strong.stats["intersection_queries"], 0)
+            self.assertEqual(strong.stats["intersection_skipped_sources"], 2)
+            self.assertTrue({"S2-10001", "S3-10001"} <= {c.record.entity_id for c in candidates})
+            weak = Blocker(db, dict(cfg, intersection_min_pool=100))
+            weak.retrieve(anchor)
+            self.assertGreater(weak.stats["intersection_queries"], 0)
+            disabled = Blocker(db, dict(cfg, intersection_min_pool=100, intersection_budget=0))
+            disabled.retrieve(anchor)
+            self.assertEqual(disabled.stats["intersection_queries"], 0)
+        finally:
+            db.close()
+
+    def test_probe_selection_is_immutable_and_requires_matching_config(self):
+        output = self.root / "probe"
+        # Tiny functional fixture, serial workers; min rate avoids depending on machine speed.
+        report = retrieval_probe(self.work, self.cfg, output, dev_limit=10, test_limit=7, min_rate=.000001)
+        self.assertTrue(report["complete"])
+        self.assertEqual(len(report["results"]), 5)
+        with self.assertRaisesRegex(ValueError, "already exists"):
+            retrieval_probe(self.work, self.cfg, output, dev_limit=10, test_limit=7)
+        if report["recommended"]:
+            verify_probe(self.work, output)
+            selected = read_json(output / "selected_config.json")
+            selected["query_keys"] += 1
+            save_json(output / "selected_config.json", selected)
+            with self.assertRaisesRegex(ValueError, "config changed"):
+                verify_probe(self.work, output)
+        else:
+            with self.assertRaisesRegex(ValueError, "no qualifying"):
+                verify_probe(self.work, output)
 
     @unittest.skipUnless(importlib.util.find_spec("xgboost"), "Optional XGBoost is not installed")
     def test_xgboost_cpu_roundtrip_and_package(self):

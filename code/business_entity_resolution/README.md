@@ -2,9 +2,19 @@
 
 Implemented: streaming input audit, SQLite-backed lexical retrieval, grouped fit/dev/holdout partitions, 46 pair features, LightGBM CPU and XGBoost CUDA matchers (or rules), macro F0.5 threshold tuning, resumable inference, strict output validation, and final zip generation. Optimized configurations add broader retrieval and Windows-spawn feature workers.
 
-**Execution status:** baseline-001 produced development macro F0.5 0.84050; the user reports submission score 0.806 and roughly five hours. The optimization changes are statically reviewed but unexecuted on the development PC. Tests, CUDA checks and challenge-data runs must execute on the separate compute PC. No improved score, speedup or passing-test claim is made yet.
+**Execution status:** baseline-001 produced development macro F0.5 0.84050 and user-reported submission score 0.806. Optimized-002 reached 0.86730 development F0.5 with verified CUDA, but its 52.24 anchors/second benchmark is too slow for the deadline. Retrieval v3 and the new probe launcher are authored but not yet runtime-verified. All computation remains on the separate compute PC.
 
-## Next run: 8 GB NVIDIA GPU
+## Current experiment: probe cheaper retrieval first
+
+```powershell
+.\scripts\Run-Fast.ps1 -Dataset 'D:\AMLC\student_resource\dataset' -RunId optimized-003 -Phase Probe
+```
+
+This runs from the repository root, reuses completed indexes and compares five recipes without training. Conditional intersections and smaller posting budgets target the measured retrieval bottleneck. The probe selects a recipe only if it meets a 150-anchor/second speed floor and overall/country recall tolerances. Its report is `runs/probes/optimized-003-fast/probe.json`.
+
+If selected, run the same command with `-Phase Evaluate -SkipInstall` to train/calibrate/benchmark; then `-Phase Predict -SkipInstall` to generate outputs after review. Prediction requires development F0.5 above 0.862298 and sufficient time before 23:59 IST with a 1.35x timing margin and 60-minute release buffer. See the [complete fast-run guide](../../docs/10_fast_retrieval_experiment.md). Earlier source/model versions remain immutable; use a fresh run ID.
+
+## Previous optimized-002 recipe: 8 GB NVIDIA GPU
 
 From the repository root on the compute PC:
 

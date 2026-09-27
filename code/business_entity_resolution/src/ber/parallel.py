@@ -25,6 +25,7 @@ def _initialize(path, cfg, fit):
 
 def _extract(blocker, chunk):
     before = blocker.stats.copy()
+    before_times = blocker.timings.copy()
     groups, vectors = [], []
     retrieval_time = feature_time = 0.0
     for anchor in chunk:
@@ -42,6 +43,7 @@ def _extract(blocker, chunk):
     stats = {key: count-before.get(key, 0) for key, count in blocker.stats.items()
              if count != before.get(key, 0)}
     times = {"retrieval_worker_seconds": retrieval_time, "feature_worker_seconds": feature_time}
+    times.update({key: value-before_times.get(key, 0) for key, value in blocker.timings.items()})
     return groups, matrix, stats, times
 
 
