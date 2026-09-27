@@ -1,0 +1,18 @@
+{
+  "seed": 42,
+  "candidates_per_source": 20,
+  "posting_limit": 300,
+  "query_keys": 6,
+  "name_tokens": 6,
+  "address_tokens": 3,
+  "name_grams": 6,
+  "train_anchors": 25000,
+  "dev_anchors": 10000,
+  "prediction_batch_anchors": 128,
+  "prediction_shard_anchors": 10000,
+  "trees": 250,
+  "learning_rate": 0.05,
+  "num_leaves": 31,
+  "min_child_samples": 50,
+  "threads": 8
+}

@@ -1,0 +1,5 @@
+# Bootstrap ranges, NOT a tested lock. Each training run saves environment.txt.
+# Replace with that compute-PC lock for the final reproduced submission.
+numpy>=1.26,<3
+rapidfuzz>=3.9,<4
+lightgbm>=4.6,<5
