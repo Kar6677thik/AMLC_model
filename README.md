@@ -1,16 +1,16 @@
 # RestoreBuildRun — Amazon ML Challenge 2026
 
-This repository contains the challenge materials, plans and matching pipeline. **Baseline-001 scored 0.806 on the submitted run (user reported). Optimized-002 improved development F0.5 from 0.84050 to 0.86730.** A subsequent probe showed that string preparation/ranking dominates its runtime. The current experiment preserves full v2 retrieval, removes unused ranking work, and reuses saved fit features to compare GPU models and an ensemble. New results remain to be measured.
+This repository contains the challenge materials, plans and matching pipeline. **Baseline-001 scored 0.806 on the submitted run (user reported). Balanced-005 prediction is now complete, with development F0.5 of 0.861759 and a candidate oracle of 0.902108.** The current experiment reuses its saved scores to evaluate precision and ownership refinements. It preserves the completed model, indices, candidates and original output.
 
 ## Run the implementation
 
-Read the [quality-first plan](docs/11_quality_first_plan.md) and [implementation README](code/business_entity_resolution/README.md). On the Windows compute PC, from the repository root:
+Read the [structural refinement plan](docs/12_structural_refinement_plan.md) and [refinement instructions](code/refinement/README.md). On the Windows compute PC, from the repository root:
 
 ```powershell
-.\scripts\Run-Quality.ps1 -Dataset 'D:\AMLC\student_resource\dataset' -StudyId quality-004 -Phase Evaluate
+.\scripts\Run-Refinement.ps1 -Phase Study
 ```
 
-Replace the dataset path. This runs tests, verifies CUDA, reuses optimized-002's saved fit arrays, compares full-quality matchers and benchmarks the best model. It stops before prediction. After reviewing `runs/quality-004/quality.json`, use `-Phase Predict -SkipInstall` if a model is selected. Preserve optimized-002's arrays and all earlier outputs. All compute stays on that PC.
+This runs synthetic tests and compares decision rules against saved development scores. Review `runs/refinement-006/study.json`; if a policy passes, `-Phase Apply` produces a separate refined output without retraining or repeating prediction. If no policy passes, keep balanced-005 unchanged. `-Phase Audit` separately examines same-address name distinctions and repeated edits by country, including France. All compute stays on that PC. Earlier model commands remain in the [model README](code/business_entity_resolution/README.md).
 
 ## Recommended solution
 
@@ -32,6 +32,7 @@ The critical requirements are: include every test Source 1 entity, support multi
 | [09 — Baseline analysis and optimization](docs/09_baseline_analysis_and_optimization.md) | Measured bottlenecks, implemented improvements, GPU settings and next-run commands |
 | [10 — Faster retrieval](docs/10_fast_retrieval_experiment.md) | Optimized-002 results, conditional retrieval, probe selection and deadline gates |
 | [11 — Quality-first plan](docs/11_quality_first_plan.md) | Probe findings, compact ranking, saved-feature refits, ensemble and deadline-aware selection |
+| [12 — Structural refinement](docs/12_structural_refinement_plan.md) | Completed-run ablations, per-business decisions, ownership, France audit and separate release |
 
 ## Current evidence and boundaries
 
